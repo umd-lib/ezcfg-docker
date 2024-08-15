@@ -1,0 +1,799 @@
+#!/usr/bin/perl -w
+
+#####################################################################
+# Copyright 2000, The University of Maryland.  All rights reserved.
+# 
+# Program:   ezcfg
+# 
+# Author:    Dave Kennedy (adapted from accessdb Ben Wallberg)
+# 
+# Purpose:   Provide an HTML interface for editing the ezcfg
+#
+# Usage:     
+#
+# Comments:  
+#
+# Revision History:
+#
+#   2006/04/17 Dave
+#     - added ezgrp to accomodate HSHSL
+#
+#   2004/02/18: Dave
+#     - update form submitted as post
+#
+#   2003/09/11: Dave
+#     - adapted from accessdb
+# 
+#####################################################################
+
+use strict;
+use DBI;
+#use URI::Escape;
+use CGI;
+
+my $db_name     = $ENV{'MYSQL_DATABASE'};
+my $db_host     = $ENV{'DATABASE_HOST'};
+my $db_port     = $ENV{'DATABASE_PORT'};
+my $db_user     = $ENV{'DATABASE_USERNAME'};
+my $db_password = $ENV{'DATABASE_PASSWORD'};
+
+
+my $q = new CGI;
+
+handleRequest($q);
+
+
+######################################################### handleRequest
+
+sub handleRequest {
+
+    my ($q) = @_;
+    
+    #
+    # Generate the response headers
+    #
+
+    print $q->header(-type=>'text/html',
+		     -expires=>'now',
+		     -pragma=>'no-cache');
+    
+    #
+    # Print the HTML opening
+    #
+
+    print <<EOS;
+<html>
+<body bgcolor="white">
+EOS
+#'
+
+    #
+    # Open a connection to the access database
+    #
+
+    # my $dsn = "DBI:mysql:database=ezcfg;mysql_socket=/ml/mysql/data/mysql.sock";
+
+
+    my $dsn = "DBI:mysql:database=$db_name;host=$db_host;port=$db_port";
+    my $dbh = DBI->connect($dsn, $db_user, $db_password) || die $DBI::errstr;
+
+
+
+    my $action = $q->param('action');
+    my $type = $q->param('type');
+    my $db = $q->param('db');
+    my $inst = $q->param('inst');
+    my $cdelete = $q->param('confirmdelete');
+
+    #
+    # Perform the requested action
+    #
+
+    if ($action eq "list") {
+	
+	if    ($type eq "inst")      { listInsts($q, $dbh); }
+	elsif ($type eq "db")        { listDbs($q, $dbh); }  
+	else {
+	    printWarn("Invalid type='" . $type . "'");
+	}
+
+
+    } elsif ($action eq "edit") { 
+
+	if    ($type eq "inst")      { editInst($q, $dbh, $inst); } 
+	elsif ($type eq "db")        { editDb($q, $dbh, $db); } 
+	else {
+	    printWarn("Invalid type='" . $type . "'");;
+	}
+	
+	
+    } elsif ($action eq "new") {
+
+	if    ($type eq "inst")      { newInst(); } 
+	elsif ($type eq "db")        { newDb($q, $dbh); } 
+	else {
+	    printWarn("Invalid type='" . $type . "'");;
+	}
+	
+	
+    } elsif ($action eq "update") {
+
+	if ($type eq "inst")           { updateInst($q, $dbh, $inst);}
+	elsif ($type eq "db")          { updateDb($q, $dbh, $db);}
+	elsif ($type eq "subscribes")  { updateSubscribes($q, $dbh, $db);} 
+	else {
+	    printWarn("Invalid type='" . $type . "'");
+	}
+	
+    } elsif ($action eq "delete") {
+
+	if     ($cdelete != 1)       { confirmDelete($q); }
+	elsif ($type eq "inst")      { deleteInst($q, $dbh, $inst); } 
+	elsif ($type eq "db")        { deleteDb($q, $dbh, $db); } 
+	else {
+	    printWarn("Invalid type='" . $type . "'");
+	}
+	
+    } else {
+	printWarn("Invalid action='" . $action . "'");
+    }
+
+#
+# Close the access database connection
+#
+	 $dbh->disconnect;
+
+#
+# Print the HTML closing
+#
+	 print <<EOS;
+</body>
+</html>
+EOS
+#'
+}
+
+
+######################################################### confirmDelete
+
+sub confirmDelete {
+    my ($q) = @_;
+    
+    printWarn("Really delete?");
+    
+    print "<br><br>";
+    
+    my $uri = $q->self_url;
+    $uri =~ s/;/&/g;
+    $uri =~ s/^http:/https:/;
+
+    print "<a href=\"${uri}&confirmdelete=1\">Yes, delete</a>";   
+}
+
+
+########################################################## deleteInst
+
+sub deleteInst {
+    my ($q, $dbh, $inst) = @_;
+    
+    $dbh->do("DELETE FROM institution WHERE inst='$inst'") || printWarn("Error in delete: " .$dbh->errstr);
+    
+    listInsts($q, $dbh);
+}
+
+
+############################################################## deleteDb
+
+############################################################## deleteDb
+
+sub deleteDb {
+    my ($q, $dbh, $db) = @_;
+
+    my ($sth, @row, $sql, $inst, $match, $text);
+
+    # Make sure there are no subscribers
+    $sql = 
+	"SELECT inst " .
+	"FROM subscribes " .
+	"WHERE subscribes.dbid=$db " .
+	"ORDER BY inst ASC";
+    $sth = $dbh->prepare($sql);
+    $sth->execute() || printWarn("$sql<br><br>Error in institution check: " .$dbh->errstr);;
+
+    $match = 0;
+    $text = "";
+    while (@row = $sth->fetchrow_array) {
+	$match = 1;
+	$text .= ", " if ($text ne "");
+	$text .= getColumn($sth, \@row, "inst");
+    }
+
+    if ($match) {
+	printWarn("Db not deleted; institution(s) using the database: $text");
+
+	editDb($q, $dbh, $db);
+
+    } else {
+	# Do the deletion
+	$dbh->do("DELETE FROM db WHERE id=$db") || printWarn("Error in delete: " .$dbh->errstr);
+	
+	listDbs($q, $dbh);
+    }
+}
+
+
+############################################################# editInst
+
+sub editInst {
+    my ($q, $dbh, $inst) = @_;
+    
+    my ($sth, @row, $sql);
+    
+    print "<form action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=update>\n";
+    print "<input type=hidden name=type   value=inst>\n";
+    print "<input type=hidden name=inst   value='$inst'>\n";
+    
+    print "<input type=submit value=\"Update Institution\">\n";
+    print "<table border=0>\n";
+    
+    $sql = "select * from institution where inst='$inst'";
+    executeSql($q, $dbh, \$sth, $sql);
+    
+    if (@row = $sth->fetchrow_array) {
+	displayField2("inst", $inst);
+	editField($sth, \@row, "name");
+	editField($sth, \@row, "filename");
+    }
+    
+    print "</table></form>\n";
+    
+    print "<form action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=delete>\n";
+    print "<input type=hidden name=type   value=inst>\n";
+    print "<input type=hidden name=inst   value='$inst'>\n";
+    print "<input type=submit value=\"Delete inst\">\n";
+    print "</form>\n";
+}
+
+
+
+################################################################ editDb
+
+sub editDb {
+    my ($q, $dbh, $db) = @_;
+    
+    my ($sth, @row);
+    
+    print "<form method=post action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=update>\n";
+    print "<input type=hidden name=type   value=db>\n";
+    print "<input type=hidden name=db     value=$db>\n";
+    
+    print "<input type=submit value=\"Update db\">\n";
+    print "<table border=0>\n";
+    
+    $sth = $dbh->prepare("select * from db where id=$db");
+    $sth->execute();
+    
+    if (@row = $sth->fetchrow_array) {
+	editField($sth, \@row, "name");
+	editField($sth, \@row, "url");
+	editField4($sth, \@row, "config");
+    }
+    
+    print "</table></form>\n";
+    
+    print "<form action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=delete>\n";
+    print "<input type=hidden name=type   value=db>\n";
+    print "<input type=hidden name=db     value=$db>\n";
+    print "<input type=submit value=\"Delete db\">\n";
+    print "</form>\n";
+    
+    print "<hr>\n";
+    
+    editSubscribes($q, $dbh, $db);
+}
+
+
+########################################################## editSubscribes
+
+sub editSubscribes {
+    my ($q, $dbh, $db) = @_;
+
+    my ($sth, @row, $sql, $inst, $name, $group);
+    
+    # Get the list of all insts
+    my %insts = ();
+    
+    $sql = 
+	"SELECT inst, name " .
+	"FROM institution " .
+	"ORDER BY inst ASC";
+    executeSql($q, $dbh, \$sth, $sql);
+    
+    while (@row = $sth->fetchrow_array) {
+	$inst = getColumn($sth, \@row, "inst");
+	$name = getColumn($sth, \@row, "name");
+	$insts{$inst}{'name'} = $name;
+	$insts{$inst}{'checked'} = 0;
+	$insts{$inst}{'group'} = "";
+    }
+    
+    $sql = 
+	"SELECT inst, ezgrp " .
+	"FROM subscribes ".
+	"WHERE dbid=$db";
+    executeSql($q, $dbh, \$sth, $sql);
+
+    while (($inst,$group) = $sth->fetchrow_array) {
+	$insts{$inst}{'checked'} = 1;
+	$insts{$inst}{'group'} = $group;
+    }
+
+    # Generate the list
+    if (scalar %insts) {
+	
+	print "<form action=\"/cgi-bin/ezcfg\">\n";
+	print "<input type=hidden name=action value=update>\n";
+	print "<input type=hidden name=type   value=subscribes>\n";
+	print "<input type=hidden name=db     value=$db>\n";
+
+	print "<input type=submit value=\"Update db's subscribe list\">\n";
+	print "<table border=0>\n";
+
+	print "<tr><td colspan=2>Inst</td><td>Group (optional)</td></tr>\n";
+	# Loop through the list of insts
+	foreach my $hashkey (sort keys %insts) {
+	    
+	    print "<tr>\n";
+	    print
+		"<td>" .
+		"<input type=checkbox name=subscribes value=$hashkey" . 
+		($insts{$hashkey}{'checked'} == 1 ? " CHECKED" : "") .
+		"> $hashkey</td>\n" 
+		;
+
+	    print "<td>\n";
+	    
+	    print
+		"<a href=\"/cgi-bin/ezcfg?action=edit&type=inst&inst=" .
+		"$hashkey\">$hashkey</a>"
+		;
+	    print "</td>\n";
+
+	    print "<td>\n";
+	    print "<input type=text name=ezgrp_$hashkey " .
+		"value=\"$insts{$hashkey}{'group'}\" " .
+		"size=10 maxlength=150>\n";
+	    print "</td>\n";
+	    print "</tr>\n";
+	}
+
+	print "</table>\n";
+	print "</form>\n";
+    }
+}
+
+
+############################################################# editField 
+
+sub editField {
+    my ($sth, $row, $field) = @_;
+    
+    my $value = getColumn($sth, $row, $field);
+    
+    print "<tr><td>$field</td><td><input size=40 name=\"$field\" value=\"$value\"></td></tr>\n";
+}
+
+
+############################################################ editField2 
+
+sub editField2 {
+    my ($field, $value) = @_;
+    
+    print "<tr><td>$field</td><td><input size=40 name=\"$field\" value=\"$value\"></td></tr>\n";
+}
+
+############################################################ editField2 
+
+sub editField3 {
+    my ($field, $value) = @_;
+    
+    print "<tr><td>$field</td><td><textarea rows=5 cols=50 name=\"$field\">$value</textarea></td></tr>\n";
+}
+
+############################################################# editField4 
+
+sub editField4 {
+    my ($sth, $row, $field) = @_;
+    
+    my $value = getColumn($sth, $row, $field);
+    
+    print "<tr><td>$field</td><td><textarea rows=5 cols=50 name=\"$field\">$value</textarea></td></tr>\n";
+}
+
+
+############################################################ displayField 
+
+sub displayField {
+    my ($sth, $row, $field) = @_;
+    
+    my $value = getColumn($sth, $row, $field);
+    
+    print "<tr><td>$field</td><td>$value</td></tr>\n";
+}
+
+############################################################ displayField2 
+
+sub displayField2 {
+    my ($field, $value) = @_;
+    
+    print "<tr><td>$field</td><td>$value</td></tr>\n";
+}
+
+
+########################################################### executeSql
+
+sub executeSql {
+    my ($q, $dbh, $sth, $sql) = @_;
+    
+    $$sth = $dbh->prepare($sql);
+    $$sth->execute() || printWarn("$sql<br><br>Error: " .$dbh->errstr);
+}
+
+
+	 
+############################################################ listInsts
+
+sub listInsts {
+    my ($q, $dbh) = @_;
+    
+    my ($sth, @row, $inst, $name);
+    
+    print "<h1> Pick an institution to edit</h1>\n";
+    
+    print "<form action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=new>\n";
+    print "<input type=hidden name=type   value=inst>\n";
+    print "<input type=submit value=\"New inst\">\n";
+    print "</form>\n";
+    
+    print "<table border=0>\n";
+    
+    $sth = $dbh->prepare("select inst,name from institution order by inst");
+    $sth->execute();
+    
+    while (@row = $sth->fetchrow_array) {
+	
+	$inst =  getColumn($sth, \@row, "inst");
+	$name =  getColumn($sth, \@row, "name");
+	
+	print
+	    "<tr>" .
+	    "<td>" .
+	    "<a href=\"/cgi-bin/ezcfg?action=edit&type=inst&inst=$inst\">" .
+	    "$inst</a>" .
+	    "</td><td>$name</td></tr>\n";
+    }
+    
+    print "</table>\n";
+}
+
+
+############################################################### listDbs
+
+sub listDbs {
+    my ($q, $dbh) = @_;
+    
+    my ($sth, @row, $name, $id, $sql);
+    
+    print "<h1> Pick a database to edit</h1>\n";
+    
+    print "<form action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=new>\n";
+    print "<input type=hidden name=type   value=db>\n";
+    print "<input type=submit value=\"New db\">\n";
+    print "</form>\n";
+    
+    # Get the list of all dbs
+    my @dbs = ();
+    my @dbids = ();
+    
+    $sql = 
+	"SELECT name, id " .
+	"FROM db " .
+	"ORDER BY name ASC";
+    executeSql($q, $dbh, \$sth, $sql);
+    
+    while (@row = $sth->fetchrow_array) {
+	push(@dbs, getColumn($sth, \@row, "name"));
+	push(@dbids, getColumn($sth, \@row, "id"));
+    }
+    
+    # Display the multi-column table
+    my ($i, $j, $n);
+    my $COLS = 4;
+    
+    if ($#dbs > -1) {
+	my $rows = int($#dbs / $COLS) + 1;
+	
+	print "<table border=0>\n";
+	
+	foreach $i (0 .. $rows-1) {
+	    print "<tr>";
+	    foreach $j (0..$COLS-1) {
+		$n = $i * $COLS + $j;
+		#$n = $j * $rows + $i;
+		print "<td>";
+		if ($n <= $#dbs) {
+		    print 
+			"<a href=\"/cgi-bin/ezcfg?action=edit&type=db&db=" . 
+			$dbids[$n] .
+			"\">" . $dbs[$n] . "</a>"
+			;
+		}
+		print "</td>";
+	    }
+	    print "</tr>\n";
+	}
+	print "</table>\n";
+    }
+}
+
+
+################################################################# newDb
+
+sub newDb {
+    my ($q, $dbh) = @_;
+    
+    my ($id);
+    
+    print "<form action=\"/cgi-bin/ezcfg\">\n";
+    print "<input type=hidden name=action value=update>\n";
+    print "<input type=hidden name=type   value=db>\n";
+    print "<input type=hidden name=db     value=-1>\n";
+
+    print "<input type=submit value=\"Update db\">\n";
+    print "<table border=0>\n";
+    editField2("name", "");
+    editField2("url", "");
+    editField3("config", "");
+
+    print "</table></form>\n";
+}
+
+
+
+############################################################### newInst
+
+sub newInst {
+	 my ($q, $dbh) = @_;
+
+	 print "<form action=\"/cgi-bin/ezcfg\">\n";
+	 print "<input type=hidden name=action value=update>\n";
+	 print "<input type=hidden name=type   value=inst>\n";
+
+	 print "<input type=submit value=\"Update inst\">\n";
+	 print "<table border=0>\n";
+
+	 editField2("inst", "");
+	 editField2("name", "");
+	 editField2("filename", "");
+
+	 print "</table></form>\n";
+}
+
+
+
+
+############################################################ printWarn
+
+sub printWarn {
+    my ($msg) = @_;
+    
+    print "<b><font size=+1 color=red>" . $msg . "</font></b><br>\n";
+}
+
+########################################################### updateInst
+
+sub updateInst {
+    my ($q, $dbh, $inst) = @_;
+
+    my ($sth, @row, $sql);
+    my ($name, $filename);
+
+    $name	    = "" unless $name = $q->param('name');
+    $filename    = "" unless $filename = $q->param('filename');
+
+    #check that all fields are valid
+
+    # Make sure we have a name
+    if ($name eq "") {
+	printWarn("The 'name' field is required, institution not updated");
+	return;
+    }
+
+    # Make sure we have a filename
+    if ($filename eq "") {
+	printWarn("The 'filename' field is required, institution not updated");
+	return;
+    }
+
+    #check if this institution exists
+    my $exists;
+
+    $sql = "select inst from institution where inst = '$inst'";
+    $sth = $dbh->prepare($sql);
+    $sth->execute();
+    if ($sth->fetchrow_array) {
+	$exists = 1;
+    } else {
+	$exists = 0;
+    }
+    
+    $sql = 
+	($exists ? "UPDATE" : "INSERT") . " institution SET " .
+	"  inst             ='$inst', " .                
+	"  name             ='$name', " .                
+	"  filename         ='$filename' " .             
+	($exists ? "WHERE inst='$inst'" : "");
+    
+    #printWarn("$sql<br>");
+    
+    $dbh->do($sql) || printWarn("Error in update: " .$dbh->errstr);
+
+    # Result screen
+    editInst($q, $dbh, $inst);
+}
+
+
+
+
+############################################################## updateDb
+
+sub updateDb {
+    my ($q, $dbh, $db) = @_;
+    
+    my ($sth, @row, $sql);
+    
+    my ($name, $url, $config);
+
+    $name   = "" unless $name   = $q->param('name');
+    $url    = "" unless $url    = $q->param('url');
+    $config = "" unless $config = $q->param('config');
+    $config =~ s/\\/\\\\/sg;
+    $config =~ s/'/\\'/sg;
+    
+    # Check if this is a new db or not
+
+    my $exists = 0;
+
+    if ($db != -1) {
+	$sth = $dbh->prepare("SELECT id FROM db WHERE id=$db");
+	$sth->execute();
+	if ($sth->fetchrow_array) {
+	    $exists = 1;
+	} else {
+	    printWarn("Could not find the db you were trying to update");
+	    return;
+	}
+    }	
+
+    $sql = 
+	($exists ? "UPDATE" : "INSERT") . " db SET " .
+	 "  name             ='$name', " .             
+	 "  url              ='$url', " .             
+	 "  config           ='$config' " .                
+	 ($exists ? "WHERE id=$db" : "");
+    
+    #printWarn("$sql<br>");
+    
+    $dbh->do($sql) || printWarn("Error in update: " .$dbh->errstr);
+    $db = $dbh->{'mysql_insertid'} unless $exists;
+    
+    # Result screen
+    editDb($q, $dbh, $db);
+}
+
+
+######################################################## updateSubscribes
+
+sub updateSubscribes {
+    my ($q, $dbh, $db) = @_;
+    
+    my ($sth, @row, $sql);
+    
+    # Get the list of insts
+    my (@insts, $inst);
+    my ($userdbkey, @userdbkeys);
+
+    @insts = $q->param('subscribes');
+
+    # Delete the existing pointers
+    $sql = "DELETE FROM subscribes WHERE dbid=$db";
+    #printWarn("$sql<br>");
+    executeSql($q, $dbh, \$sth, $sql);
+
+    # Add the new pointers back in
+    while ($inst = shift(@insts)) {
+	my $group = $q->param("ezgrp_$inst") || "";
+	$sql = 
+	    "INSERT subscribes SET " .
+	    "inst='$inst' " .
+	    ",dbid=$db" .
+	    ",ezgrp='$group'"
+	    ;
+	#printWarn("$sql<br>");
+	executeSql($q, $dbh, \$sth, $sql);
+    }
+
+    editDb($q, $dbh, $db);
+}
+
+
+
+#
+######################################################## updateUrlAuthos
+#
+#sub updateUrlAuthos {
+#	 my ($r, $dbh, $urlkey) = @_;
+#
+#	 my ($sth, @row, $sql);
+#
+#	 # Get the list of userurlkeys
+#	 my (@args, $arg, $name, $value);
+#	 my ($userurlkey, @userurlkeys);
+#
+#	 @args = split(/&/, $r->args);
+#	 while ($arg = shift(@args)) {
+#		  ($name, $value) = split(/=/,$arg);
+#		  if ($name eq "userurlkey") {
+#				push(@userurlkeys, $value);
+#		  }
+#	 }
+#
+#	 # Delete the existing pointers
+#	 $sql = "DELETE FROM userurl WHERE urlkey=$urlkey";
+#	 #printWarn("$sql<br>");
+#	 executeSql($r, $dbh, \$sth, $sql);
+#
+#	 # Add the new pointers back in
+#	 while ($userurlkey = shift(@userurlkeys)) {
+#		  $sql = 
+#		  	 "INSERT userurl SET " .
+#		  	 "userurlkey='$userurlkey' " .
+#		  	 ",urlkey=$urlkey"
+#		  	 ;
+#		  #printWarn("$sql<br>");
+#		  executeSql($r, $dbh, \$sth, $sql);
+#	 }
+#
+#	 editUrl($r, $dbh, $urlkey);
+#}
+#
+
+
+
+############################################################ getColumn
+# Get a named column from an $sth query result for a row;
+######################################################################
+
+sub getColumn {
+    my $sth  = shift;
+    my $row  = shift;
+    my $name = shift;
+
+    my $i;
+    for ($i=0; $i <= $#$row; $i++) {
+        if ($sth->{NAME}->[$i] eq $name) {
+            return $$row[$i];
+        }
+    }
+
+    return undef;
+}
+
+
+
