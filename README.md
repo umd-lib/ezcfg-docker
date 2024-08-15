@@ -5,7 +5,7 @@ This repository includes the dockerfile as well as th encessary application file
 To build the docker file for the Ezcfg application in k8s, run the following docker command:
 
 
-docker buildx build . --builder=kube -t docker.lib.umd.edu/ezcfg-webapp:<tag> --push
+docker buildx build . --builder=kube -t docker.lib.umd.edu/ezcfg-webapp:tag-number --push
 
 
 Make sure you have the "build" namespace.
