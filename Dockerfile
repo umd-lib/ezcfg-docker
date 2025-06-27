@@ -14,7 +14,7 @@ COPY conf/ /usr/local/apache2/conf/
 # COPY conf/passwd_ezcfg /usr/local/apache2/conf/passwd_ezcfg
 
 # Copy your website files
-COPY html/ /usr/local/apache2/htdocs/
+COPY html/ /usr/local/apache2/html/
 COPY cgi-bin/ /usr/local/apache2/cgi-bin/
 
 

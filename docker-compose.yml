@@ -1,0 +1,29 @@
+# For local testing
+services:
+  ezcfg:
+    image: testing
+    ports:
+      - 3000:80
+    environment:
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306 # 31118
+      DATABASE_USERNAME: ezproxy
+      DATABASE_PASSWORD: ezproxypass
+      MYSQL_DATABASE: ezcfg
+    working_dir: /usr/local/apache2
+    #volumes:
+    #  - ./cgi-bin:/usr/local/apache2/cgi-bin
+    #  - ./html:/usr/local/apache2/html
+    #  - ./conf/httpd.conf:/usr/local/apache2/conf/httpd.conf
+  mysql:
+    image: mysql:8.4.5
+    volumes:
+      - ezcfg-data:/var/lib/mysql
+ #     - ../data:/data
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: ezcfg
+      MYSQL_USER: ezcfg
+
+volumes:
+  ezcfg-data:
