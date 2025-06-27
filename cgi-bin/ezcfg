@@ -83,6 +83,7 @@ EOS
     my $type = $q->param('type');
     my $db = $q->param('db');
     my $inst = $q->param('inst');
+    my $server = $q->param('server');
     my $cdelete = $q->param('confirmdelete');
 
     #
@@ -93,6 +94,7 @@ EOS
 	
 	if    ($type eq "inst")      { listInsts($q, $dbh); }
 	elsif ($type eq "db")        { listDbs($q, $dbh); }  
+	elsif ($type eq "server")    { listServers($q, $dbh);}
 	else {
 	    printWarn("Invalid type='" . $type . "'");
 	}
@@ -121,6 +123,7 @@ EOS
 	if ($type eq "inst")           { updateInst($q, $dbh, $inst);}
 	elsif ($type eq "db")          { updateDb($q, $dbh, $db);}
 	elsif ($type eq "subscribes")  { updateSubscribes($q, $dbh, $db);} 
+	elsif ($type eq "server")      { updateServer($q, $dbh, $server);}
 	else {
 	    printWarn("Invalid type='" . $type . "'");
 	}
@@ -177,7 +180,9 @@ sub deleteInst {
     my ($q, $dbh, $inst) = @_;
     
     $dbh->do("DELETE FROM institution WHERE inst='$inst'") || printWarn("Error in delete: " .$dbh->errstr);
-    
+
+    updateTS($dbh);
+
     listInsts($q, $dbh);
 }
 
@@ -217,7 +222,9 @@ sub deleteDb {
 	# Do the deletion
 	$dbh->do("DELETE FROM db WHERE id=$db") || printWarn("Error in delete: " .$dbh->errstr);
 	
-	listDbs($q, $dbh);
+	updateTS($dbh);
+    
+    listDbs($q, $dbh);
     }
 }
 
@@ -437,10 +444,10 @@ sub displayField2 {
 ########################################################### executeSql
 
 sub executeSql {
-    my ($q, $dbh, $sth, $sql) = @_;
+    my ($q, $dbh, $sth, $sql, @values) = @_;
     
     $$sth = $dbh->prepare($sql);
-    $$sth->execute() || printWarn("$sql<br><br>Error: " .$dbh->errstr);
+    $$sth->execute(@values) || printWarn("$sql<br><br>Error: " .$dbh->errstr);
 }
 
 
@@ -450,7 +457,7 @@ sub executeSql {
 sub listInsts {
     my ($q, $dbh) = @_;
     
-    my ($sth, @row, $inst, $name);
+    my ($sth, @row, $inst, $name, $sql);
     
     print "<h1> Pick an institution to edit</h1>\n";
     
@@ -462,8 +469,8 @@ sub listInsts {
     
     print "<table border=0>\n";
     
-    $sth = $dbh->prepare("select inst,name from institution order by inst");
-    $sth->execute();
+    $sql = "select inst,name from institution order by inst";
+    executeSql($q, $dbh, \$sth, $sql);
     
     while (@row = $sth->fetchrow_array) {
 	
@@ -540,6 +547,46 @@ sub listDbs {
 	}
 	print "</table>\n";
     }
+}
+
+################################################################# listServers
+
+sub listServers {
+    my ($q, $dbh) = @_;
+
+    my ($sth, @row, $name, $id, $sql);
+
+    $dbh->do("SET time_zone = 'US/Eastern'");
+
+    $sql = "SELECT name, updated FROM server where name like ' %'";
+    executeSql($q, $dbh, \$sth, $sql);
+
+    @row = $sth->fetchrow_array;
+    print "&nbsp;<p>\n";
+    print "<h2>Database last updated $row[1]</h2>\n";
+
+    print "<p><h2>Server status</h2>\n";
+
+    print '<font size="+2">';
+    print "<table width=\"50%\" border=1>\n";
+    print "<tr><th>Server</th><th>Last Update</th><th>Status</th></tr>\n";
+
+    $sql = "SELECT name, updated, status FROM server" .
+     " where name NOT LIKE ' %' ORDER BY name";
+    executeSql($q, $dbh, \$sth, $sql);
+
+    while (@row = $sth->fetchrow_array) {
+        print "<tr><td>$row[0]</td><td>$row[1]</td><td>$row[2]</td>\n";
+        print "<td>\n";
+        print "  <form action=\"/cgi-bin/ezcfg\">\n";
+        print "  <input type=hidden name=action value=update>\n";
+        print "  <input type=hidden name=type   value=server>\n";
+        print "  <input type=hidden name=server value='$row[0]'>\n";
+        print "  <input type=submit value=\"Update\">\n";
+        print "  </form>\n";
+        print "</td></tr>\n";
+    }
+    print "</table>\n";
 }
 
 
@@ -644,6 +691,8 @@ sub updateInst {
     
     $dbh->do($sql) || printWarn("Error in update: " .$dbh->errstr);
 
+    updateTS($dbh);
+    
     # Result screen
     editInst($q, $dbh, $inst);
 }
@@ -693,6 +742,8 @@ sub updateDb {
     $dbh->do($sql) || printWarn("Error in update: " .$dbh->errstr);
     $db = $dbh->{'mysql_insertid'} unless $exists;
     
+    updateTS($dbh);
+    
     # Result screen
     editDb($q, $dbh, $db);
 }
@@ -729,7 +780,22 @@ sub updateSubscribes {
 	executeSql($q, $dbh, \$sth, $sql);
     }
 
+    updateTS($dbh);
+    
     editDb($q, $dbh, $db);
+}
+
+######################################################## updateServer
+
+sub updateServer {
+    my ($q, $dbh, $server) = @_;
+
+    my ($sql, $sth);
+
+    $sql = "UPDATE server SET status = 'WAITING' WHERE name = ?";
+    executeSql($q, $dbh, \$sth, $sql, ($server));
+
+    listServers($q, $dbh);
 }
 
 
@@ -796,4 +862,11 @@ sub getColumn {
 }
 
 
+########################################################## updateTS
 
+sub updateTS {
+    my ($dbh) = @_;
+
+    $dbh->do("UPDATE server SET updated = NOW() WHERE name = ' db'") ||
+        printWarn("Error updating timestamp: " . $dbh->errstr)
+}
