@@ -11,7 +11,7 @@ services:
       DATABASE_PASSWORD: ezproxypass
       MYSQL_DATABASE: ezcfg
     working_dir: /usr/local/apache2
-    #volumes:
+    # volumes:
     #  - ./cgi-bin:/usr/local/apache2/cgi-bin
     #  - ./html:/usr/local/apache2/html
     #  - ./conf/httpd.conf:/usr/local/apache2/conf/httpd.conf
